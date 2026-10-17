@@ -105,6 +105,14 @@ vibeflow.json
 .aider/
 .continue/
 .copilot/
+.vibeflow-preview.hash
+
+# =============================================================================
+# Uploaded / extracted content (user data)
+# =============================================================================
+data/uploads/
+data/extracted/
+data/pdfs/
 
 # =============================================================================
 # Temporary & Cache

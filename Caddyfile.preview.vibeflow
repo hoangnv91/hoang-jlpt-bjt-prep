@@ -1,0 +1,6 @@
+{
+  admin off
+}
+:5173 {
+  reverse_proxy /* app:3000
+}

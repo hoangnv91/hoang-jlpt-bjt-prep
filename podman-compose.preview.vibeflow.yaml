@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.preview
+    environment:
+      PGHOST: db
+      PORT: 3000
+      UPLOAD_DIR: /app/data/uploads
+    volumes:
+      - uploads:/app/data/uploads
+    command:
+      - sh
+      - -c
+      - export AUTH_SECRET=$(openssl rand -hex 32) && npx prisma migrate deploy && npx prisma db seed && exec npm start -- -H 0.0.0.0 -p 3000
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.preview
+    environment:
+      PGHOST: db
+      UPLOAD_DIR: /app/data/uploads
+    volumes:
+      - uploads:/app/data/uploads
+    command:
+      - sh
+      - -c
+      - npx prisma migrate deploy && exec npm run worker
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "5173:5173"
+    environment:
+      NO_PROXY: "app,db,worker,localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      no_proxy: "app,db,worker,localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./Caddyfile.preview.vibeflow:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - app
+
+volumes:
+  pgdata: {}
+  uploads: {}

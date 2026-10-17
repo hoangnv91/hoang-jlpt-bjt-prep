@@ -1,0 +1,12 @@
+.git
+.vibeflow
+data/extracted
+data/pdfs
+.next
+podman-compose.preview.vibeflow.yaml
+Caddyfile.preview.vibeflow
+Dockerfile
+.env
+.env.preview
+.vibeflow-preview.hash
+*.md

@@ -1,0 +1,313 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Exam {
+  JLPT_N1
+  BJT_J1
+}
+
+enum Section {
+  // JLPT N1
+  VOCAB        // 文字・語彙
+  GRAMMAR      // 文法
+  READING      // 読解
+  LISTENING    // 聴解
+  // BJT J1
+  BUSINESS_VOCAB // 語彙・表現
+}
+
+enum QuestionType {
+  MCQ
+}
+
+enum SourceType {
+  UPLOAD
+  URL
+  TEXT
+}
+
+enum RightsStatus {
+  UNKNOWN
+  PERMITTED
+  RESTRICTED
+  PENDING_VERIFICATION
+}
+
+enum PermissionLevel {
+  PERMITTED
+  NOT_PERMITTED
+  UNKNOWN
+}
+
+enum DocumentStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum JobType {
+  EXTRACT
+  RIGHTS_CHECK
+  AI_GENERATE
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum DraftKind {
+  VOCAB
+  GRAMMAR
+  READING
+  QUESTION
+  LESSON
+}
+
+enum DraftStatus {
+  PENDING_REVIEW
+  ACCEPTED
+  REJECTED
+}
+
+enum RoadmapItemStatus {
+  PLANNED
+  IN_PROGRESS
+  DONE
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String?
+  email        String   @unique
+  passwordHash String?
+  googleId     String?  @unique
+  image        String?
+  createdAt    DateTime @default(now())
+
+  attempts    QuizAttempt[]
+  flashcards  FlashcardProgress[]
+  documents   Document[]
+  chunks      SourceChunk[]
+  jobs        ProcessingJob[]
+  drafts      AiDraft[]
+  lessons     Lesson[]
+  roadmapItems RoadmapItem[]
+}
+
+model Document {
+  id            String       @id @default(uuid())
+  userId        String
+  fileName      String
+  mimeType      String
+  sizeBytes     Int
+  sha256        String
+  storageKey    String
+  sourceType    SourceType   @default(UPLOAD)
+  sourceUrl     String?
+  author        String?
+  license       String?
+  purpose       String?
+  rightsStatus  RightsStatus @default(UNKNOWN)
+  rightsStore   PermissionLevel @default(UNKNOWN)
+  rightsExtract PermissionLevel @default(UNKNOWN)
+  rightsSendAI  PermissionLevel @default(UNKNOWN)
+  rightsDistribute PermissionLevel @default(UNKNOWN)
+  rightsEvidence  String?
+  rightsVerifiedAt DateTime?
+  status        DocumentStatus @default(PROCESSING)
+  errorMessage  String?
+  createdAt     DateTime     @default(now())
+
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks SourceChunk[]
+  jobs   ProcessingJob[]
+  drafts AiDraft[]
+
+  @@index([userId])
+}
+
+model SourceChunk {
+  id         String  @id @default(uuid())
+  documentId String
+  userId     String
+  index      Int
+  page       Int?
+  paragraph  Int?
+  heading    String?
+  content    String
+  charStart  Int?
+  charEnd    Int?
+  createdAt  DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, index])
+  @@index([userId])
+}
+
+model ProcessingJob {
+  id            String     @id @default(uuid())
+  userId        String
+  documentId    String?
+  type          JobType
+  status        JobStatus  @default(PENDING)
+  attempts      Int        @default(0)
+  maxAttempts   Int        @default(3)
+  nextRetryAt   DateTime?
+  errorCode     String?
+  errorMessage  String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime   @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextRetryAt])
+  @@index([userId])
+}
+
+model AiDraft {
+  id            String      @id @default(uuid())
+  userId        String
+  documentId    String?
+  kind          DraftKind
+  payload       Json
+  sourceRefs    Json
+  status        DraftStatus @default(PENDING_REVIEW)
+  aiModel       String?
+  rejectionReason String?
+  createdAt     DateTime    @default(now())
+  reviewedAt    DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  lessons  Lesson[]
+
+  @@index([userId, status])
+}
+
+model Lesson {
+  id           String   @id @default(uuid())
+  userId       String
+  draftId      String?
+  title        String
+  content      Json
+  sourceRefs   Json
+  status       String   @default("PUBLISHED")
+  createdAt    DateTime @default(now())
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  draft       AiDraft?      @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  roadmapItems RoadmapItem[]
+
+  @@index([userId])
+}
+
+model RoadmapItem {
+  id        String           @id @default(uuid())
+  userId    String
+  lessonId  String
+  order     Int              @default(0)
+  title     String
+  status    RoadmapItemStatus @default(PLANNED)
+  createdAt DateTime         @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+  @@index([userId, order])
+}
+
+model Question {
+  id            String       @id @default(uuid())
+  exam          Exam
+  section       Section
+  type          QuestionType @default(MCQ)
+  prompt        String
+  options       Json
+  correctIndex  Int
+  explanation   String?
+  source        String?
+  order         Int          @default(0)
+  documentId    String?
+  draftId       String?
+  sourceChunkIds Json         @default("[]")
+  createdAt     DateTime     @default(now())
+
+  answers AttemptAnswer[]
+
+  @@index([exam, section])
+  @@index([documentId])
+}
+
+model Flashcard {
+  id                String             @id @default(uuid())
+  exam              Exam
+  term              String
+  reading           String?
+  meaning           String
+  example           String?
+  exampleTranslation String?
+  createdAt         DateTime           @default(now())
+
+  progress FlashcardProgress[]
+
+  @@index([exam])
+}
+
+model FlashcardProgress {
+  id          String   @id @default(uuid())
+  userId      String
+  flashcardId String
+  known       Boolean  @default(false)
+  reviewedAt  DateTime @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flashcard Flashcard @relation(fields: [flashcardId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, flashcardId])
+}
+
+model QuizAttempt {
+  id            String   @id @default(uuid())
+  userId        String
+  exam          Exam
+  section       Section?
+  kind          String   @default("practice") // practice | mock
+  score         Int
+  totalQuestions Int
+  durationSec   Int
+  startedAt     DateTime @default(now())
+  finishedAt    DateTime @default(now())
+
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers AttemptAnswer[]
+
+  @@index([userId, exam])
+}
+
+model AttemptAnswer {
+  id            String   @id @default(uuid())
+  attemptId     String
+  questionId    String
+  selectedIndex Int?
+  isCorrect     Boolean
+
+  attempt  QuizAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+}
