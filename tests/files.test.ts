@@ -12,8 +12,17 @@ describe("file validation", () => {
     expect(f.format).toBe("pdf");
   });
 
+  it("rejects weak PDF magic without version", () => {
+    expect(() => detectFileFormat(buf("%PDF-\nnot a real pdf"), "doc.pdf")).toThrowError(ApiError);
+  });
+
   it("rejects a file claiming .pdf but not a PDF", () => {
     expect(() => detectFileFormat(buf("hello world"), "fake.pdf")).toThrowError(ApiError);
+  });
+
+  it("rejects empty files", () => {
+    expect(() => detectFileFormat(Buffer.alloc(0), "empty.pdf")).toThrowError(ApiError);
+    expect(() => detectFileFormat(Buffer.alloc(0), "empty.txt")).toThrowError(ApiError);
   });
 
   it("detects DOCX by zip magic + word content", () => {

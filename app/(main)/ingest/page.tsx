@@ -27,7 +27,7 @@ export default async function IngestPage() {
         <p className="mt-1 text-sm text-ink/60">{dict.ingest.subtitle}</p>
       </div>
 
-      <IngestForm dict={dict} />
+      <IngestForm dict={dict} lang={lang} />
 
       <div className="mt-12">
         <h2 className="mb-4 font-jp-display text-lg font-bold">{dict.ingest.documents}</h2>
@@ -39,6 +39,7 @@ export default async function IngestPage() {
             sourceType: d.sourceType,
             status: d.status,
             rightsStatus: d.rightsStatus,
+            section: d.section,
             chunkCount: d._count.chunks,
             createdAt: d.createdAt.toISOString(),
           }))}

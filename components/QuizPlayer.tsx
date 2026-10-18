@@ -13,6 +13,8 @@ interface Props {
   section?: string | null;
   kind?: "practice" | "mock";
   durationMinutes?: number;
+  maxScore?: number;
+  shuffleAnswers?: boolean;
 }
 
 export default function QuizPlayer({
@@ -22,6 +24,8 @@ export default function QuizPlayer({
   section = null,
   kind = "practice",
   durationMinutes,
+  maxScore,
+  shuffleAnswers = false,
 }: Props) {
   const router = useRouter();
   const deck = useMemo(() => shuffle(questions), [questions]);
@@ -38,6 +42,15 @@ export default function QuizPlayer({
   const [remaining, setRemaining] = useState<number | null>(
     durationMinutes ? durationMinutes * 60 : null
   );
+  const [bookmarked, setBookmarked] = useState<Record<string, boolean>>({});
+  const [bookmarkBusy, setBookmarkBusy] = useState(false);
+
+  const q = deck[idx];
+  const optionOrder = useMemo(() => {
+    if (!shuffleAnswers || !q) return null;
+    return shuffle(q.options.map((_, i) => i));
+  }, [q, shuffleAnswers]);
+  const optAt = (i: number) => (optionOrder ? optionOrder[i] : i);
 
   useEffect(() => {
     if (remaining === null) return;
@@ -50,7 +63,6 @@ export default function QuizPlayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining]);
 
-  const q = deck[idx];
   const answeredCount = selected.filter((s) => s !== null).length;
 
   function choose(i: number) {
@@ -72,6 +84,24 @@ export default function QuizPlayer({
     if (idx > 0) {
       setIdx(idx - 1);
       setRevealed(selected[idx - 1] !== null);
+    }
+  }
+
+  async function toggleBookmark(questionId: string) {
+    if (bookmarkBusy) return;
+    setBookmarkBusy(true);
+    try {
+      const res = await fetch("/api/bookmarks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBookmarked((prev) => ({ ...prev, [questionId]: data.bookmarked }));
+      }
+    } finally {
+      setBookmarkBusy(false);
     }
   }
 
@@ -103,6 +133,9 @@ export default function QuizPlayer({
 
   if (finished && result) {
     const pct = Math.round((result.score / result.total) * 100);
+    const scaled = maxScore
+      ? Math.round((result.score / result.total) * maxScore)
+      : result.score;
     return (
       <div className="animate-fade-in mx-auto max-w-xl text-center">
         <div className="hanko mx-auto h-16 w-16 text-lg">{pct >= 60 ? "合格" : "再挑戦"}</div>
@@ -112,8 +145,11 @@ export default function QuizPlayer({
             {dict.study.scoreLabel}
           </div>
           <div className="mt-1 font-jp-display text-5xl font-bold text-accent">
-            {result.score}
-            <span className="text-2xl text-ink/40"> / {result.total}</span>
+            {scaled}
+            <span className="text-2xl text-ink/40">
+              {" "}
+              / {maxScore ?? result.total}
+            </span>
           </div>
           <div className="mt-3 text-sm text-ink/60">{pct}%</div>
         </div>
@@ -174,20 +210,39 @@ export default function QuizPlayer({
 
       {/* Question */}
       <div className="rounded-2xl border border-ink/10 bg-white p-6 shadow-sm md:p-8">
-        <p className="whitespace-pre-line text-[15px] leading-relaxed md:text-base">
-          {q.prompt}
-        </p>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <p className="whitespace-pre-line text-[15px] leading-relaxed md:text-base">
+            {q.prompt}
+          </p>
+          <button
+            type="button"
+            onClick={() => void toggleBookmark(q.id)}
+            disabled={bookmarkBusy}
+            aria-label={dict.study.bookmarkToggle}
+            title={dict.study.bookmarkToggle}
+            className={cn(
+              "shrink-0 rounded-full p-2 text-lg transition-colors focus-ring",
+              bookmarked[q.id]
+                ? "bg-accent/10 text-accent"
+                : "text-ink/30 hover:bg-ink/5 hover:text-ink/60"
+            )}
+          >
+            {bookmarked[q.id] ? "★" : "☆"}
+          </button>
+        </div>
 
         <div className="mt-6 space-y-3">
-          {q.options.map((opt, i) => {
-            const isSelected = selected[idx] === i;
-            const isCorrect = i === q.correctIndex;
+          {q.options.map((_, i) => {
+            const real = optAt(i);
+            const opt = q.options[real];
+            const isSelected = selected[idx] === real;
+            const isCorrect = real === q.correctIndex;
             const showState = revealed;
             return (
               <button
                 key={i}
                 type="button"
-                onClick={() => choose(i)}
+                onClick={() => choose(real)}
                 disabled={revealed}
                 className={cn(
                   "flex w-full items-start gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-ring",

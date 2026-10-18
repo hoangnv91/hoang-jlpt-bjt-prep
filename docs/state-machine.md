@@ -45,6 +45,16 @@ Ingest (upload/URL/text)
   → (tùy chọn) thêm Lesson vào Roadmap
 ```
 
+## Luồng tạo nội dung thủ công (không qua pipeline)
+```
+Ingest → tab "Tạo thủ công" (ManualDraftForm)
+  → dán văn bản có cấu trúc (parse + validate theo dòng) HOẶC nhập từng ô
+  → POST /api/content/manual {kind, payload, section?}
+  → validate payload bằng zod (draftSchemas[kind])
+  → materializeContent(): QUESTION → Question rows | khác → Lesson
+  → không tạo ProcessingJob, không cần AI, không cần duyệt
+```
+
 ## Quy tắc quyền (rights gate)
 - `assertCanExtract`: chặn nếu `RESTRICTED`/`NOT_PERMITTED`; chặn nếu `UNKNOWN`/`PENDING_VERIFICATION` (425).
 - `assertCanSendAI`: tương tự cho `rightsSendAI`.

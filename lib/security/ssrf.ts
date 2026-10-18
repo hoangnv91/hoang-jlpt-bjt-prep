@@ -1,77 +1,165 @@
 import { ApiError } from "@/lib/errors";
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
+import ipaddr from "ipaddr.js";
 import type { LookupAddress } from "node:dns";
+import type { IncomingMessage } from "node:http";
 
-const BLOCKED_SCHEMES = new Set(["file:", "ftp:", "gopher:", "data:", "javascript:"]);
+const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 const MAX_REDIRECTS = 3;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_CONTENT_BYTES = 20 * 1024 * 1024;
 
-function isPrivateIp(ip: string): boolean {
-  const parts = ip.split(".");
-  if (parts.length === 4) {
-    const [a, b] = parts.map(Number);
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 127) return true;
-    if (a === 0) return true;
-    if (a === 169 && b === 254) return true; // link-local
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-    if (a >= 224) return true; // multicast + reserved
-  }
-  return false;
-}
-
-function isPrivateIpv6(ip: string): boolean {
-  const lower = ip.toLowerCase().split("%")[0];
-  if (lower === "::1") return true; // loopback
-  if (lower.startsWith("fe80")) return true; // link-local
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
-  if (lower.startsWith("::ffff:")) {
-    // IPv4-mapped
-    const v4 = lower.split("::ffff:")[1];
-    if (v4 && v4.includes(".")) return isPrivateIp(v4);
-  }
-  return false;
-}
-
-async function resolveAndCheck(hostname: string): Promise<void> {
-  // Literal IP (IPv4 or IPv6) — check directly without DNS
-  const literal = hostname.replace(/^\[|\]$/g, "");
-  const ipv4Literal = /^\d{1,3}(\.\d{1,3}){3}$/.test(literal);
-  const ipv6Literal = literal.includes(":");
-  if (ipv4Literal || ipv6Literal) {
-    const blocked = ipv6Literal ? isPrivateIpv6(literal) : isPrivateIp(literal);
-    if (blocked) {
-      throw new ApiError(
-        422,
-        "SSRF_BLOCKED",
-        `Blocked URL: ${hostname} is a private/internal address`
-      );
-    }
-    return;
-  }
-
-  let addresses: LookupAddress[];
+/**
+ * True if the address is private / reserved / non-routable (an SSRF target).
+ * Uses ipaddr.js `range()`: anything that is not globally-routable `unicast`
+ * is blocked — covers RFC1918, loopback, link-local, ULA, multicast, CGNAT,
+ * TEST-NET, documentation, IPv4-mapped, NAT64 (rfc6052), 6to4, unspecified, …
+ * for both IPv4 and IPv6.
+ */
+export function isBlockedAddress(address: string): boolean {
+  const clean = address.split("%")[0].toLowerCase(); // strip zone id
   try {
-    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+    return ipaddr.parse(clean).range() !== "unicast";
+  } catch {
+    // Unparseable address — treat as unsafe.
+    return true;
+  }
+}
+
+/**
+ * Normalize exotic IP literal forms (integer, hex, hex-dotted) to dotted-quad,
+ * and pass valid IPv6 literals through — so `http://2130706433/`,
+ * `http://0x7f000001/` and `http://[::1]/` are all classified correctly.
+ */
+export function normalizeIpLiteral(hostname: string): string | null {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return h;
+  if (/^\d{1,10}$/.test(h)) {
+    const n = Number(h);
+    if (Number.isInteger(n) && n >= 0 && n <= 0xffffffff) {
+      return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join(".");
+    }
+    return null;
+  }
+  if (/^0x[0-9a-f]{1,8}$/i.test(h)) {
+    const n = parseInt(h, 16);
+    if (Number.isInteger(n) && n >= 0 && n <= 0xffffffff) {
+      return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join(".");
+    }
+    return null;
+  }
+  if (/^0x[0-9a-f]{1,2}(\.0x[0-9a-f]{1,2}){3}$/i.test(h)) {
+    return h.split(".").map((p) => parseInt(p, 16)).join(".");
+  }
+  // IPv6 literal (contains colons) — validate it parses, then pass through.
+  if (h.includes(":")) {
+    try {
+      ipaddr.parse(h);
+      return h;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Pre-flight DNS check: resolves the hostname and rejects if ANY address is
+ * private/reserved. This is a fast early signal; the authoritative check runs
+ * again at connect time inside `guardedLookup` (closes the DNS-rebinding gap).
+ */
+async function assertHostnameSafe(hostname: string): Promise<void> {
+  let addrs: LookupAddress[];
+  try {
+    addrs = await dns.lookup(hostname, { all: true, verbatim: true });
   } catch {
     throw new ApiError(422, "FETCH_FAILED", `Cannot resolve host: ${hostname}`);
   }
-  for (const addr of addresses) {
-    const ip = addr.address;
-    const blocked = ip.includes(":")
-      ? isPrivateIpv6(ip)
-      : isPrivateIp(ip);
-    if (blocked) {
+  if (addrs.length === 0) {
+    throw new ApiError(422, "FETCH_FAILED", `Cannot resolve host: ${hostname}`);
+  }
+  for (const addr of addrs) {
+    if (isBlockedAddress(addr.address)) {
       throw new ApiError(
         422,
         "SSRF_BLOCKED",
-        `Blocked URL: ${hostname} resolves to a private/internal address`
+        `Blocked URL: ${hostname} resolves to a private/internal address (${addr.address})`
       );
     }
   }
+}
+
+/**
+ * Custom `lookup` for http(s).request: resolves the hostname and rejects if ANY
+ * resolved address is private/reserved. Because this runs at CONNECT time, it
+ * closes the DNS-rebinding / TOCTOU gap (check happens on the exact address the
+ * socket connects to, not on a separate earlier resolution).
+ */
+function guardedLookup(
+  hostname: string,
+  _options: unknown,
+  callback: (err: Error | null, address?: string | LookupAddress[], family?: number) => void
+): void {
+  const literal = normalizeIpLiteral(hostname);
+  if (literal) {
+    if (isBlockedAddress(literal)) {
+      callback(new ApiError(422, "SSRF_BLOCKED", `Blocked private/internal address: ${literal}`));
+      return;
+    }
+    const family = literal.includes(":") ? 6 : 4;
+    callback(null, literal, family);
+    return;
+  }
+
+  dns
+    .lookup(hostname, { all: true, verbatim: true })
+    .then((addrs: LookupAddress[]) => {
+      if (addrs.length === 0) {
+        callback(new ApiError(422, "FETCH_FAILED", `Cannot resolve host: ${hostname}`));
+        return;
+      }
+      for (const addr of addrs) {
+        if (isBlockedAddress(addr.address)) {
+          callback(
+            new ApiError(
+              422,
+              "SSRF_BLOCKED",
+              `Blocked URL: ${hostname} resolves to a private/internal address (${addr.address})`
+            )
+          );
+          return;
+        }
+      }
+      const v4 = addrs.find((a) => a.family === 4);
+      const chosen = v4 ?? addrs[0];
+      callback(null, chosen.address, chosen.family);
+    })
+    .catch(() => callback(new ApiError(422, "FETCH_FAILED", `Cannot resolve host: ${hostname}`)));
+}
+
+function requestOnce(target: URL): Promise<{ res: IncomingMessage; url: URL }> {
+  return new Promise((resolve, reject) => {
+    const lib = target.protocol === "https:" ? https : http;
+    const req = lib.request(
+      target,
+      {
+        method: "GET",
+        headers: {
+          "user-agent": "jlpt-bjt-prep-ingest/1.0",
+          accept: "*/*",
+        },
+        lookup: guardedLookup as unknown as Parameters<typeof http.request>[1]["lookup"],
+      },
+      (res) => resolve({ res, url: target })
+    );
+    req.setTimeout(FETCH_TIMEOUT_MS, () =>
+      req.destroy(new ApiError(408, "FETCH_FAILED", "Request timed out"))
+    );
+    req.on("error", (err) => reject(err));
+    req.end();
+  });
 }
 
 export interface SafeFetchResult {
@@ -90,11 +178,14 @@ export async function safeFetch(url: string): Promise<SafeFetchResult> {
     throw new ApiError(422, "VALIDATION_ERROR", "Invalid URL");
   }
 
-  if (BLOCKED_SCHEMES.has(parsed.protocol)) {
+  if (!ALLOWED_SCHEMES.has(parsed.protocol)) {
     throw new ApiError(422, "SSRF_BLOCKED", `Scheme not allowed: ${parsed.protocol}`);
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ApiError(422, "SSRF_BLOCKED", `Scheme not allowed: ${parsed.protocol}`);
+  if (!parsed.hostname) {
+    throw new ApiError(422, "VALIDATION_ERROR", "URL has no host");
+  }
+  if (parsed.username || parsed.password) {
+    throw new ApiError(422, "VALIDATION_ERROR", "URL must not contain credentials");
   }
 
   let current = parsed;
@@ -102,63 +193,87 @@ export async function safeFetch(url: string): Promise<SafeFetchResult> {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    await resolveAndCheck(current.hostname);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    let res: Response;
-    try {
-      res = await fetch(current.toString(), {
-        redirect: "manual",
-        signal: controller.signal,
-        headers: {
-          "user-agent": "jlpt-bjt-prep-ingest/1.0",
-          accept: "*/*",
-        },
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      const aborted = err instanceof Error && err.name === "AbortError";
-      throw new ApiError(
-        422,
-        aborted ? "AI_TIMEOUT" : "FETCH_FAILED",
-        aborted ? "Request timed out" : `Failed to fetch URL: ${current.hostname}`
-      );
+    // Literal IPs bypass the custom `lookup` (Node connects directly), so
+    // validate them here, before the socket is ever opened.
+    const literal = normalizeIpLiteral(current.hostname);
+    if (literal) {
+      if (isBlockedAddress(literal)) {
+        throw new ApiError(
+          422,
+          "SSRF_BLOCKED",
+          `Blocked private/internal address: ${literal}`
+        );
+      }
+    } else {
+      // Hostname: pre-flight DNS check as an early signal; the authoritative
+      // check still happens at connect time inside guardedLookup.
+      await assertHostnameSafe(current.hostname);
     }
-    clearTimeout(timer);
 
-    if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+    const { res, url: finalUrl } = await requestOnce(current);
+
+    if (
+      res.statusCode !== undefined &&
+      res.statusCode >= 300 &&
+      res.statusCode < 400 &&
+      res.headers.location
+    ) {
+      res.resume(); // drain and discard
       if (redirects >= MAX_REDIRECTS) {
         throw new ApiError(422, "SSRF_BLOCKED", "Too many redirects");
       }
       redirects += 1;
+      let next: URL;
       try {
-        current = new URL(res.headers.get("location")!, current);
+        next = new URL(res.headers.location, current);
       } catch {
         throw new ApiError(422, "SSRF_BLOCKED", "Invalid redirect location");
       }
-      if (BLOCKED_SCHEMES.has(current.protocol)) {
-        throw new ApiError(422, "SSRF_BLOCKED", `Redirect scheme not allowed: ${current.protocol}`);
+      if (!ALLOWED_SCHEMES.has(next.protocol)) {
+        throw new ApiError(422, "SSRF_BLOCKED", `Redirect scheme not allowed: ${next.protocol}`);
       }
+      if (next.username || next.password) {
+        throw new ApiError(422, "SSRF_BLOCKED", "Redirect URL must not contain credentials");
+      }
+      current = next;
       continue;
     }
 
-    const contentLength = Number(res.headers.get("content-length") ?? "0");
+    const contentLength = Number(res.headers["content-length"] ?? "0");
     if (contentLength > MAX_CONTENT_BYTES) {
+      res.destroy();
       throw new ApiError(413, "FILE_TOO_LARGE", "Remote content exceeds 20MB limit");
     }
 
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.byteLength > MAX_CONTENT_BYTES) {
+    // Stream the body with an incremental cap so a lying content-length or a
+    // chunked response cannot exhaust memory before the limit is enforced.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let tooLarge = false;
+    try {
+      for await (const chunk of res) {
+        const buf = chunk as Buffer;
+        total += buf.length;
+        if (total > MAX_CONTENT_BYTES) {
+          tooLarge = true;
+          res.destroy();
+          break;
+        }
+        chunks.push(buf);
+      }
+    } catch {
+      throw new ApiError(422, "FETCH_FAILED", "Failed to read response body");
+    }
+    if (tooLarge) {
       throw new ApiError(413, "FILE_TOO_LARGE", "Remote content exceeds 20MB limit");
     }
 
     return {
-      ok: res.ok,
-      status: res.status,
-      contentType: res.headers.get("content-type"),
-      body: buffer,
-      finalUrl: current.toString(),
+      ok: res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300,
+      status: res.statusCode ?? 0,
+      contentType: res.headers["content-type"] ?? null,
+      body: Buffer.concat(chunks),
+      finalUrl: finalUrl.toString(),
     };
   }
 }

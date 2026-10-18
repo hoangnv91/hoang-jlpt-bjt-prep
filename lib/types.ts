@@ -4,7 +4,8 @@ export type Section =
   | "GRAMMAR"
   | "READING"
   | "LISTENING"
-  | "BUSINESS_VOCAB";
+  | "BUSINESS_VOCAB"
+  | "THEORY";
 
 export interface QuestionOption {
   label: string;
@@ -64,11 +65,12 @@ export const SECTION_LABEL: Record<
   READING: { vi: "Đọc hiểu", ja: "読解", short: "読解" },
   LISTENING: { vi: "Nghe hiểu", ja: "聴解", short: "聴解" },
   BUSINESS_VOCAB: { vi: "Từ vựng kinh doanh", ja: "語彙・表現", short: "語彙" },
+  THEORY: { vi: "Lý thuyết", ja: "理論・解説", short: "理論" },
 };
 
 export const EXAM_SECTIONS: Record<Exam, Section[]> = {
-  JLPT_N1: ["VOCAB", "GRAMMAR", "READING", "LISTENING"],
-  BJT_J1: ["BUSINESS_VOCAB", "READING", "LISTENING"],
+  JLPT_N1: ["VOCAB", "GRAMMAR", "READING", "LISTENING", "THEORY"],
+  BJT_J1: ["BUSINESS_VOCAB", "READING", "LISTENING", "THEORY"],
 };
 
 export const MOCK_TIME_MINUTES: Record<Exam, number> = {

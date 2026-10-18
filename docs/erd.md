@@ -10,6 +10,7 @@ erDiagram
     User ||--o{ RoadmapItem : owns
     User ||--o{ QuizAttempt : owns
     User ||--o{ FlashcardProgress : marks
+    User ||--o{ QuestionBookmark : marks
 
     Document ||--o{ SourceChunk : splits_into
     Document ||--o{ ProcessingJob : processed_by
@@ -24,6 +25,8 @@ erDiagram
     QuizAttempt ||--o{ AttemptAnswer : contains
 
     Flashcard ||--o{ FlashcardProgress : tracked_by
+    Question ||--o{ QuestionBookmark : bookmarked_by
+    User ||--o{ QuestionBookmark : owns
 
     User {
         uuid id PK
@@ -31,6 +34,7 @@ erDiagram
         string name
         string passwordHash
         string googleId UK
+        string image
         datetime createdAt
     }
     Document {
@@ -54,6 +58,7 @@ erDiagram
         string rightsEvidence
         datetime rightsVerifiedAt
         enum status "PROCESSING|READY|FAILED"
+        string errorMessage
         datetime createdAt
     }
     SourceChunk {
@@ -104,7 +109,8 @@ erDiagram
         string title
         json content
         json sourceRefs
-        string status
+        enum section "VOCAB|GRAMMAR|READING|LISTENING|BUSINESS_VOCAB|THEORY"
+        string status "PUBLISHED"
         datetime createdAt
     }
     RoadmapItem {
@@ -119,16 +125,23 @@ erDiagram
     Question {
         uuid id PK
         enum exam "JLPT_N1|BJT_J1"
-        enum section "VOCAB|GRAMMAR|READING|LISTENING|BUSINESS_VOCAB"
+        enum section "VOCAB|GRAMMAR|READING|LISTENING|BUSINESS_VOCAB|THEORY"
         enum type "MCQ"
         string prompt
         json options
         int correctIndex
         string explanation
         string source
+        int order
         uuid documentId FK
         uuid draftId FK
         json sourceChunkIds
+        datetime createdAt
+    }
+    QuestionBookmark {
+        uuid id PK
+        uuid userId FK
+        uuid questionId FK
         datetime createdAt
     }
     Flashcard {
@@ -174,4 +187,8 @@ erDiagram
 - Timestamp lưu UTC (Prisma DateTime), serialize ra ISO8601.
 - `Document.rights*` phân biệt 4 quyền: lưu trữ / trích xuất / gửi AI / phân phối.
 - `AiDraft.status = PENDING_REVIEW` → chỉ ACCEPTED mới tạo `Lesson`/`Question`.
-- Migration files: `prisma/migrations/20261017135907_init` (v1), `20261017142427_v2_content_pipeline` (v2).
+- Nội dung **tạo thủ công** (`POST /api/content/manual`) ghi thẳng `Lesson`/`Question` với `documentId`/`draftId` = NULL (không qua AiDraft).
+- `Question.section` là enum `Section` đầy đủ (gồm `THEORY`), nhưng luồng accept/materialize chỉ chấp nhận 5 phần thi: VOCAB, GRAMMAR, READING, LISTENING, BUSINESS_VOCAB.
+- Unique constraints: `User.email`, `User.googleId`, `RoadmapItem(userId, lessonId)`, `FlashcardProgress(userId, flashcardId)`, `QuestionBookmark(userId, questionId)`.
+- Indexes chính: `Document(userId)`, `SourceChunk(documentId, index)`, `ProcessingJob(status, nextRetryAt)`, `AiDraft(userId, status)`, `Question(exam, section)`, `RoadmapItem(userId, order)`.
+- Migration files: `20261017135907_init` (v1) · `20261017142427_v2_content_pipeline` (v2) · `20261017233121_add_question_bookmark` · `20261018001500_add_theory_section_and_document_domain`.

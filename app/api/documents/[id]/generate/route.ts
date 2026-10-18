@@ -29,6 +29,16 @@ export async function POST(req: Request, { params }: Params) {
       throw new ApiError(422, "VALIDATION_ERROR", "kind must be one of VOCAB|GRAMMAR|READING|QUESTION|LESSON");
     }
 
+    // Domain routing: a document tagged THEORY only produces theory lessons;
+    // question banks make no sense for theory material.
+    if (doc.section === "THEORY" && kind !== "LESSON") {
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "Documents tagged as Lý thuyết only support LESSON generation"
+      );
+    }
+
     const chunkCount = await prisma.sourceChunk.count({ where: { documentId: id } });
     if (chunkCount === 0) {
       throw new ApiError(422, "VALIDATION_ERROR", "Document has no extracted chunks yet");

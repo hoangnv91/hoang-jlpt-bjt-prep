@@ -39,4 +39,21 @@ describe("extraction chunking", () => {
     const chunks = await extractDocument("md", Buffer.from(md, "utf8"));
     expect(chunks.some((c) => c.heading === "第一章")).toBe(true);
   });
+
+  it("rejects empty buffers", async () => {
+    const { extractDocument } = await import("@/lib/extract");
+    await expect(extractDocument("txt", Buffer.alloc(0))).rejects.toThrowError(/empty/i);
+  });
+
+  it("rejects corrupted PDFs without leaking internals", async () => {
+    const { extractDocument } = await import("@/lib/extract");
+    const garbage = Buffer.from("this is definitely not a pdf file content", "utf8");
+    await expect(extractDocument("pdf", garbage)).rejects.toThrowError(/failed to extract/i);
+  });
+
+  it("rejects oversized extracted text", async () => {
+    const { extractDocument } = await import("@/lib/extract");
+    const huge = "あ".repeat(11_000_000);
+    await expect(extractDocument("txt", Buffer.from(huge, "utf8"))).rejects.toThrowError(/too large/i);
+  });
 });

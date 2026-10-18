@@ -14,7 +14,7 @@ const MAGIC: Record<SupportedFormat, { mime: string; ext: string; test: (buf: Bu
   pdf: {
     mime: "application/pdf",
     ext: ".pdf",
-    test: (b) => b.length >= 5 && b.subarray(0, 5).toString("ascii") === "%PDF-",
+    test: (b) => /^%PDF-\d\.\d/.test(b.subarray(0, 8).toString("ascii")),
   },
   docx: {
     mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -38,7 +38,16 @@ const EXECUTABLE_MAGICS = [
   { name: "Java class", test: (b: Buffer) => b.length >= 4 && b.subarray(0, 4).toString("hex") === "cafebabe" },
 ];
 
+export function assertUploadSize(sizeBytes: number): void {
+  if (sizeBytes > MAX_FILE_BYTES) {
+    throw new ApiError(413, "FILE_TOO_LARGE", "File exceeds 20MB limit");
+  }
+}
+
 export function detectFileFormat(buffer: Buffer, fileName: string): DetectedFile {
+  if (buffer.byteLength === 0) {
+    throw new ApiError(422, "INVALID_FILE", "File is empty");
+  }
   if (buffer.byteLength > MAX_FILE_BYTES) {
     throw new ApiError(413, "FILE_TOO_LARGE", "File exceeds 20MB limit");
   }

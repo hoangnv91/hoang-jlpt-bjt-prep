@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Dict } from "@/lib/i18n/shared";
+import { SECTION_LABEL, type Section } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface DocRow {
@@ -12,6 +13,7 @@ interface DocRow {
   sourceType: "UPLOAD" | "URL" | "TEXT";
   status: "PROCESSING" | "READY" | "FAILED";
   rightsStatus: "UNKNOWN" | "PERMITTED" | "RESTRICTED" | "PENDING_VERIFICATION";
+  section: Section | null;
   chunkCount: number;
   createdAt: string;
 }
@@ -99,6 +101,10 @@ export default function DocumentList({
       {documents.map((doc) => {
         const ready = doc.status === "READY";
         const rightsOk = doc.rightsStatus === "PERMITTED";
+        const isTheory = doc.section === "THEORY";
+        const kinds = isTheory
+          ? (["LESSON"] as const)
+          : GENERATE_KINDS;
         return (
           <div
             key={doc.id}
@@ -111,6 +117,11 @@ export default function DocumentList({
                   <span className="rounded-full bg-paper px-2 py-0.5">
                     {doc.sourceType}
                   </span>
+                  {doc.section && (
+                    <span className="rounded-full bg-accent/10 px-2 py-0.5 font-medium text-accent">
+                      {SECTION_LABEL[doc.section][lang]}
+                    </span>
+                  )}
                   <span
                     className={cn(
                       "rounded-full px-2 py-0.5 font-medium",
@@ -139,7 +150,7 @@ export default function DocumentList({
               <div className="flex flex-wrap items-center gap-2">
                 {ready && rightsOk && (
                   <div className="flex flex-wrap gap-1.5">
-                    {GENERATE_KINDS.map((kind) => (
+                    {kinds.map((kind) => (
                       <button
                         key={kind}
                         type="button"

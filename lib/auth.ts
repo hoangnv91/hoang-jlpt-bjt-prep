@@ -14,6 +14,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt" },
   secret: process.env.AUTH_SECRET ?? "insecure-dev-secret-change-me",
   trustHost: true,
+  // Behind the Caddy reverse proxy the app only ever sees plain-HTTP
+  // connections (X-Forwarded-Proto may claim https, which would flip the
+  // default to Secure cookies with a __Host-/__Secure- prefix). The preview
+  // origin may be plain HTTP, and a Secure cookie is silently rejected there,
+  // breaking CSRF ("MissingCSRF"). Force non-secure cookies: they work over
+  // both HTTP and HTTPS.
+  useSecureCookies: false,
   pages: {
     signIn: "/login",
   },

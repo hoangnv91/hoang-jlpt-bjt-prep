@@ -1,6 +1,13 @@
 {
   admin off
 }
-:5173 {
+:80 {
+  # The VibeFlow preview proxy mounts the app under
+  # /api/v1/sessions/{session-id}/preview/{port} and forwards to this port
+  # (80, per the preview hostname). Strip the prefix so the Next.js app
+  # sees clean paths (no-op when the proxy already strips).
+  # X-Forwarded-* headers are handled by Caddy's defaults.
+  @pref path_regexp prefix ^/api/v1/sessions/[^/]+/preview/[0-9]+(/.*)?$
+  rewrite @pref {re.1}
   reverse_proxy /* app:3000
 }

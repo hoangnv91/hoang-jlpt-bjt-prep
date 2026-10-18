@@ -1,6 +1,19 @@
 services:
   db:
     image: postgres:16
+    # Explicitly disable verbose SQL logging: log_statement=none (no per-query
+    # SELECT spam from worker polling), log_min_messages=warning (errors only),
+    # and silence connection churn noise.
+    command:
+      - postgres
+      - -c
+      - log_statement=none
+      - -c
+      - log_min_messages=warning
+      - -c
+      - log_connections=off
+      - -c
+      - log_disconnections=off
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
@@ -12,6 +25,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+      start_period: 30s
+    networks:
+      - vibeflow-net
 
   app:
     build:
@@ -20,18 +36,40 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     env_file:
       - .env.preview
     environment:
       PGHOST: db
-      PORT: 3000
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
       UPLOAD_DIR: /app/data/uploads
+      AUTH_TRUST_HOST: "true"
+      NEXTAUTH_URL_INTERNAL: "http://127.0.0.1:3000"
+      AI_MODEL: "openai/gpt-oss-20b"
+      AI_BASE_URL: "https://api.groq.com/openai/v1"
+    ports:
+      # Also publish the app's own port so the preview can reach it directly
+      # if it probes 3000 instead of the caddy port (80).
+      - "3000:3000"
     volumes:
       - uploads:/app/data/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
     command:
-      - sh
+      - bash
       - -c
-      - export AUTH_SECRET=$(openssl rand -hex 32) && npx prisma migrate deploy && npx prisma db seed && exec npm start -- -H 0.0.0.0 -p 3000
+      - |
+        until bash -c '</dev/tcp/db/5432' 2>/dev/null; do sleep 1; done
+        npx prisma migrate deploy
+        npx prisma db seed
+        exec ./node_modules/.bin/next start
+    networks:
+      - vibeflow-net
 
   worker:
     build:
@@ -40,22 +78,31 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     env_file:
       - .env.preview
     environment:
       PGHOST: db
       UPLOAD_DIR: /app/data/uploads
+      AI_MODEL: "openai/gpt-oss-20b"
+      AI_BASE_URL: "https://api.groq.com/openai/v1"
     volumes:
       - uploads:/app/data/uploads
     command:
-      - sh
+      - bash
       - -c
-      - npx prisma migrate deploy && exec npm run worker
+      - |
+        until bash -c '</dev/tcp/db/5432' 2>/dev/null; do sleep 1; done
+        npx prisma migrate deploy
+        exec node --import tsx scripts/worker.ts
+    networks:
+      - vibeflow-net
 
   caddy:
     image: caddy:2-alpine
     ports:
-      - "5173:5173"
+      # The preview platform serves on port 80; map host 80 to container 80.
+      - "80:80"
     environment:
       NO_PROXY: "app,db,worker,localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
       no_proxy: "app,db,worker,localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
@@ -63,7 +110,14 @@ services:
     volumes:
       - ./Caddyfile.preview.vibeflow:/etc/caddy/Caddyfile:ro
     depends_on:
-      - app
+      app:
+        condition: service_healthy
+    networks:
+      - vibeflow-net
+
+networks:
+  vibeflow-net:
+    driver: bridge
 
 volumes:
   pgdata: {}

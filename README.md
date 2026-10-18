@@ -1,6 +1,6 @@
 # Luyện Thi Nhật Ngữ — JLPT N1 & BJT J1
 
-Website song ngữ Việt–Nhật ôn thi tiếng Nhật: luyện đề theo phần, thi thử tính giờ, flashcard, và hệ thống **nhập tài liệu → AI sinh bản nháp → duyệt → bài học/lộ trình** với quản lý bản quyền & truy xuất nguồn gốc.
+Website song ngữ Việt–Nhật ôn thi tiếng Nhật: luyện đề theo phần, thi thử tính giờ, flashcard, và hệ thống **nhập tài liệu → AI sinh bản nháp → duyệt → bài học/lộ trình** với quản lý bản quyền & truy xuất nguồn gốc — kèm **tạo nội dung thủ công** (dán văn bản có cấu trúc, không cần AI).
 
 ## Công nghệ
 
@@ -10,6 +10,7 @@ Website song ngữ Việt–Nhật ôn thi tiếng Nhật: luyện đề theo ph
 - **Storage**: MinIO (S3-compatible) hoặc local disk (fallback)
 - **Worker**: tiến trình nền `scripts/worker.ts` (tsx) xử lý jobs
 - **AI**: OpenAI-compatible API (`AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`), output JSON có schema (zod)
+- **Tạo thủ công**: parser văn bản có cấu trúc (`lib/ingest/manual.ts`) → publish thẳng Lesson/Question, không qua AI
 
 ## Thiết lập môi trường cục bộ
 
@@ -67,7 +68,7 @@ npm run worker            # worker xử lý jobs (terminal riêng)
 
 ### 5. Chạy kiểm thử
 ```bash
-npm test                  # vitest: SSRF, file validation, rights, state machine, chunking
+npm test                  # vitest: SSRF, file validation, rights, state machine, chunking, manual parser
 npm run lint
 npm run build
 ```
@@ -76,27 +77,30 @@ npm run build
 
 ```bash
 podman-compose -f podman-compose.preview.vibeflow.yaml up --build -d
-# db (Postgres) + minio (S3) + app (Next.js :3000) + worker + caddy (:5173)
+# db (Postgres) + app (Next.js :3000) + worker + caddy (:80, reverse proxy)
 ```
 
 ## Cấu trúc thư mục
 
 ```
 app/
-  (main)/ingest/       # Nhập tài liệu (upload/URL/text) + danh sách + generate
+  (main)/ingest/       # Nhập tài liệu (upload/URL/text) + tạo thủ công + danh sách + generate
   (main)/review/       # Duyệt bản nháp AI (accept/reject)
   (main)/roadmap/      # Lộ trình học tập
   (main)/jobs/         # Trạng thái xử lý nền
   (main)/dashboard|study|mock|flashcards   # Học tập (v1)
-  api/documents|drafts|roadmap|attempts|flashcards  # REST API
+  api/documents|drafts|content|roadmap|attempts|flashcards|bookmarks  # REST API
 lib/
-  ingest/              # file validation (magic bytes), schemas
+  ingest/              # file validation (magic bytes), schemas, parser tạo thủ công (manual.ts)
   extract/             # PDF/DOCX/TXT/MD/CSV → source chunks
   rights/              # đánh giá quyền (store/extract/sendAI/distribute)
-  ai/                  # client, prompts, output schemas
+  ai/                  # client, prompts, output schemas, materialize (Lesson/Question)
   security/ssrf.ts     # chặn SSRF (private IP, redirects)
   jobs.ts              # state machine + retry policy
   storage.ts           # MinIO / local disk
+components/
+  IngestForm.tsx       # 4 tab: upload / URL / text / tạo thủ công
+  ManualDraftForm.tsx  # dán văn bản (parse → xem trước) + nhập từng ô → publish
 scripts/
   worker.ts            # background worker
   extract-pdf.mjs      # tiện ích trích PDF → markdown
@@ -104,6 +108,7 @@ docs/
   erd.md               # ERD (mermaid)
   api.md               # REST API + error codes
   state-machine.md     # job states + retry + pipeline
+  manual-content.md    # tính năng tạo nội dung thủ công (định dạng dán)
 tests/                 # vitest
 ```
 
@@ -115,6 +120,8 @@ tests/                 # vitest
 4. Bấm "Sinh nội dung" → job `AI_GENERATE` → AI tạo bản nháp (từ vựng/ngữ pháp/đọc hiểu/câu hỏi/bài học) → lưu `AiDraft` với `status=PENDING_REVIEW` kèm `sourceRefs`.
 5. User duyệt từng bản nháp (chỉnh sửa/chấp nhận/từ chối). **Chỉ bản nháp được chấp nhận** mới tạo `Lesson`/`Question` (transaction).
 6. (Tùy chọn) Thêm bài học vào `Roadmap`.
+
+**Ngoài ra:** tab **"Tạo thủ công"** cho phép dán văn bản có cấu trúc (từ vựng/ngữ pháp/đọc hiểu/câu hỏi/bài học) hoặc nhập từng ô → publish thẳng `Lesson`/`Question` qua `POST /api/content/manual` — không cần AI, không qua pipeline job. Xem `docs/manual-content.md`.
 
 ## Bảo mật
 
@@ -129,6 +136,7 @@ tests/                 # vitest
 
 - [x] v1: luyện đề, thi thử, flashcard, dashboard, tài khoản
 - [x] v2: ingest (PDF/DOCX/TXT/MD/CSV, URL, text), extraction → chunks, rights-check, AI drafts + review, roadmap, jobs UI
-- [x] Tests: SSRF, file validation, rights, state machine, chunking
+- [x] Tạo nội dung thủ công: dán văn bản có cấu trúc + form từng ô → publish thẳng (không cần AI)
+- [x] Tests: SSRF, file validation, rights, state machine, chunking, manual parser
 - [ ] AI generation cần `AI_API_KEY` để chạy thực tế (chưa cấu hình trong preview)
 - [ ] Google OAuth cần client credentials

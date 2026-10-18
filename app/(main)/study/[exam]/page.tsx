@@ -2,13 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { auth } from "@/lib/auth";
 import { getDictFromCookie } from "@/lib/i18n";
 import {
   EXAM_LABEL,
   EXAM_SECTIONS,
-  SECTION_LABEL,
   type Exam,
 } from "@/lib/types";
+import SectionPicker from "./SectionPicker";
 
 export const metadata: Metadata = { title: "Luyện đề" };
 
@@ -21,6 +22,8 @@ export default async function StudySectionPage({
   if (exam !== "JLPT_N1" && exam !== "BJT_J1") notFound();
   const e: Exam = exam;
   const { lang, dict } = await getDictFromCookie();
+  const session = await auth();
+  const userId = session?.user?.id;
 
   const counts = await prisma.question.groupBy({
     by: ["section"],
@@ -29,8 +32,33 @@ export default async function StudySectionPage({
   });
   const countMap = new Map(counts.map((c) => [c.section, c._count._all]));
 
+  if (userId) {
+    const theoryLessons = await prisma.lesson.count({
+      where: { userId, section: "THEORY" },
+    });
+    countMap.set("THEORY", theoryLessons);
+  }
+
+  let wrongCount = 0;
+  let bookmarkCount = 0;
+  if (userId) {
+    const wrongRows = await prisma.attemptAnswer.findMany({
+      where: {
+        isCorrect: false,
+        attempt: { userId },
+        question: { exam: e },
+      },
+      select: { questionId: true },
+      distinct: ["questionId"],
+    });
+    wrongCount = wrongRows.length;
+    bookmarkCount = await prisma.questionBookmark.count({
+      where: { userId, question: { exam: e } },
+    });
+  }
+
   return (
-    <div className="animate-fade-in">
+    <div>
       <div className="mb-8">
         <Link
           href="/study"
@@ -47,28 +75,15 @@ export default async function StudySectionPage({
         <p className="mt-1 text-sm text-ink/60">{dict.study.chooseSection}</p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        {EXAM_SECTIONS[e].map((section) => {
-          const count = countMap.get(section) ?? 0;
-          return (
-            <Link
-              key={section}
-              href={`/study/${e}/${section}`}
-              className="card-hover flex items-center justify-between rounded-2xl border border-ink/10 bg-white p-6 shadow-sm focus-ring"
-            >
-              <div>
-                <div className="font-jp-display text-lg font-bold">
-                  {SECTION_LABEL[section][lang]}
-                </div>
-                <div className="mt-1 text-xs text-ink/50">
-                  {count} {dict.study.questionsCount}
-                </div>
-              </div>
-              <span className="text-xl text-accent">→</span>
-            </Link>
-          );
-        })}
-      </div>
+      <SectionPicker
+        exam={e}
+        sections={EXAM_SECTIONS[e]}
+        counts={Object.fromEntries(countMap)}
+        wrongCount={wrongCount}
+        bookmarkCount={bookmarkCount}
+        dict={dict}
+        lang={lang}
+      />
     </div>
   );
 }

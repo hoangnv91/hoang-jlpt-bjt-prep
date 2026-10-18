@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { ApiError, toErrorBody } from "@/lib/errors";
 import { detectFileFormat } from "@/lib/ingest/files";
 import { uploadDocumentSchema, urlDocumentSchema, textDocumentSchema } from "@/lib/ingest/schemas";
+import { persistDocument } from "@/lib/ingest/persist";
 import { safeFetch } from "@/lib/security/ssrf";
 import { saveObject, sha256Of, buildStorageKey } from "@/lib/storage";
 import { evaluateRights } from "@/lib/rights";
@@ -62,45 +63,27 @@ async function handleUpload(req: Request, userId: string) {
   const form = await req.formData();
   const file = form.get("file");
   const metadataRaw = form.get("metadata");
+  const sectionRaw = form.get("section");
 
   if (!(file instanceof File)) {
     throw new ApiError(422, "VALIDATION_ERROR", "Missing file");
   }
 
-  let metadata = {};
-  if (metadataRaw && typeof metadataRaw === "string") {
-    const parsed = uploadDocumentSchema.safeParse({ metadata: JSON.parse(metadataRaw) });
-    if (!parsed.success) throw new ApiError(422, "VALIDATION_ERROR", "Invalid metadata");
-    metadata = parsed.data.metadata;
-  }
+  const parsed = uploadDocumentSchema.safeParse({
+    metadata: metadataRaw && typeof metadataRaw === "string" ? JSON.parse(metadataRaw) : {},
+    section: sectionRaw && typeof sectionRaw === "string" ? sectionRaw : null,
+  });
+  if (!parsed.success) throw new ApiError(422, "VALIDATION_ERROR", "Invalid metadata");
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const detected = detectFileFormat(buffer, file.name);
-  const sha = sha256Of(buffer);
-  const storageKey = buildStorageKey(userId, file.name, sha);
-  await saveObject(storageKey, buffer, detected.mimeType);
-
-  const rights = evaluateRights({
+  const doc = await persistDocument({
+    userId,
+    fileName: file.name,
+    buffer,
+    metadata: parsed.data.metadata,
     sourceType: "UPLOAD",
-    ...metadata,
+    section: parsed.data.section ?? null,
   });
-
-  const doc = await prisma.document.create({
-    data: {
-      userId,
-      fileName: file.name,
-      mimeType: detected.mimeType,
-      sizeBytes: buffer.byteLength,
-      sha256: sha,
-      storageKey,
-      sourceType: "UPLOAD",
-      ...metadata,
-      ...rightsToDb(rights),
-    },
-  });
-
-  await createJob({ userId, documentId: doc.id, type: "EXTRACT" });
-  await createJob({ userId, documentId: doc.id, type: "RIGHTS_CHECK" });
 
   return NextResponse.json({ document: doc }, { status: 201 });
 }
@@ -136,6 +119,7 @@ async function handleUrl(body: unknown, userId: string) {
       storageKey,
       sourceType: "URL",
       sourceUrl: fetched.finalUrl,
+      section: parsed.data.section ?? null,
       ...metadata,
       ...rightsToDb(rights),
     },
@@ -168,6 +152,7 @@ async function handleText(body: unknown, userId: string) {
       sha256: sha,
       storageKey,
       sourceType: "TEXT",
+      section: parsed.data.section ?? null,
       ...metadata,
       ...rightsToDb(rights),
     },
